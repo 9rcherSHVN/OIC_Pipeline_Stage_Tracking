@@ -215,7 +215,7 @@ Batch operations into stored procedures to minimize round-trips from OIC DB Adap
 -- ┌───────────┬──────────────┬─────────────────────┬─────────────┬────────────┬────────────────┐
 -- │ **ORDER** │ **STAGE_ID** │** STAGE_NAME**      │ STATUS      │ ATTEMPT_#  │ DURATION_MS    │
 -- ├───────────┼──────────────┼─────────────────────┼─────────────┼────────────┼────────────────┤
--- │   **1**   │ **STAGE_00**1│ **INBOUND_VALID..** │ _COMPLETED_ │     1      │    1,120       │
+-- │   **1**   │ **STAGE_001**│ **INBOUND_VALID..** │ _COMPLETED_ │     1      │    1,120       │
 -- │   **2**   │ **STAGE_002**│ **ENRICHMENT**      │ _FAILED_    │     1      │   60,050       │  ← 60s timeout
 -- │   **3**   │ **STAGE_003**│ **ERP_SUBMISSION**  │ _PENDING_   │     1      │    null        │  ← never reached
 -- │   **4**   │ **STAGE_004**│ **NOTIFICATION **   │ _PENDING_   │     1      │    null        │  ← never reached
