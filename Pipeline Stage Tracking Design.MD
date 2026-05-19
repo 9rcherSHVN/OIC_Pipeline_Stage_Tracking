@@ -21,6 +21,7 @@ OIC Gen 3 Pipeline Stage Tracking & Activity Stream Logging — v2.1 (Audit-Corr
 > - M-06: `ASYNC_LAG_FLAG` documented with implementation note
 > - Observability queries: duration calculations fixed with full multi-component INTERVAL extraction
 
+
 What Changed: The Async-First Pivot
 
 The origin design had 2–3 synchronous REST round-trips per stage boundary adding up to ~1.4–2.8 seconds of tracking overhead per pipeline run. This final version replaces that with an OCI Queue async buffer between business integrations and the ATP persistence layer, reducing tracking overhead to ~20–40ms per enqueue call — a 75–85% latency reduction. Two additional architectural shifts enable full async:
@@ -52,9 +53,9 @@ Code
 │  │                                                                           │ │
 │  │  [ENTRY]                                                                  │ │
 │  │    │                                                                      │ │
-│  │    ├── JS: corrId = UUID.randomUUID()  ← LOCAL, instant, no REST needed  │ │
+│  │    ├── JS: corrId = UUID.randomUUID()  ← LOCAL, instant, no REST needed   │ │
 │  │    │                                                                      │ │
-│  │  [STAGE 1]──────[STAGE 2]──────[STAGE N]──────[EXIT]                    │ │
+│  │  [STAGE 1]──────[STAGE 2]──────[STAGE N]──────[EXIT]                      │ │
 │  │     │               │               │             │                       │ │
 │  │     ▼               ▼               ▼             ▼                       │ │
 │  │  Enqueue          Enqueue         Enqueue      Enqueue                    │ │
@@ -85,7 +86,7 @@ Code
   │  -logs          │          │  OIC_ACTIVITY_   │
   │                 │          │  LOG             │              │
   │  oic-tracking   │          │                  │              ▼
-  │  -dlq  (DLQ)   │          │  Stored Procs    │    ┌──────────────────────┐
+  │  -dlq  (DLQ)   │           │  Stored Procs    │    ┌──────────────────────┐
   └─────────────────┘          └──────────────────┘    │  OIC Email Action    │
                                        │               │  (Failure alerts)    │
                                        ▼               └──────────────────────┘
@@ -94,7 +95,9 @@ Code
                                │  APEX Dashboard  │
                                └──────────────────┘
 
+
 3. OCI Queue Design
+
 3.1 Queue Topology
 Two dedicated queues separate high-volume log writes from structured tracking state updates:
 
@@ -139,6 +142,7 @@ JSON
   "enqueuedAt":     "2026-05-15T10:00:00.123Z",
   "payload":        { }
 }
+
 3.3 Payload Schemas Per Message Type
 JSON
 // PIPELINE_INIT payload
@@ -191,7 +195,9 @@ JSON
   "stackTrace":  "..."
 }
 
+
 4. ATP Database Layer
+
 4.1 Complete Schema
 SQL
 -- ============================================================
@@ -831,6 +837,7 @@ END SP_WRITE_DLQ;
 END OIC_TRACKER_PKG;
 /
 
+
 5. Framework Integration Designs
 5.1 TRACKING_EVENT_DISPATCHER — Core Async Engine
 This is the heart of the async architecture. It is triggered on a schedule (every 30–60 seconds) or by OCI Events when the queue depth exceeds a threshold.
@@ -839,56 +846,56 @@ Code
 Trigger: Schedule (every 30s) OR OCI Event (queue depth > N)
 
 ┌─[PHASE 1: DEQUEUE TRACKING EVENTS]─────────────────────────────────────────┐
-│                                                                             │
-│  REST Invoke → OCI Queue API                                                │
-│  [ACC-01] URL path parameter is the Queue OCID — NOT the display name.    │
-│           Obtain from: OCI Console → Queues → oic-tracking-events → OCID  │
-│    GET /20210924/queues/{ocid1.queue.oc1.<region>.<unique-id>}/messages     │
+│                                                                            │
+│  REST Invoke → OCI Queue API                                               │
+│  [ACC-01] URL path parameter is the Queue OCID — NOT the display name.     │
+│           Obtain from: OCI Console → Queues → oic-tracking-events → OCID   │
+│    GET /20210924/queues/{ocid1.queue.oc1.<region>.<unique-id>}/messages    │
 │  [GAP-07] limit=10 (was 20): smaller batch ensures processing stays well   │
 │           within visibilityInSeconds window even with Object Storage + Email│
 │  [GAP-07] visibilityInSeconds=120 (was 30): FAILED stage batch can trigger │
 │           Object Storage PUTs (200–500ms each) + Email (300–800ms each).   │
 │           5 failed stages in one batch could exceed 30s — 120s is safe.    │
-│    ?limit=10&visibilityInSeconds=120                                        │
-│                                                                             │
+│    ?limit=10&visibilityInSeconds=120                                       │
+│                                                                            │
 │  [ACC-02] Each message in the response array has a "receipt" field.        │
-│           Store receipt per message. Use receipt (NOT messageId) to delete  │
-│           the message after successful processing:                          │
-│           DELETE /20210924/queues/{queueOcid}/messages/{receipt}            │
+│           Store receipt per message. Use receipt (NOT messageId) to delete │
+│           the message after successful processing:                         │
+│           DELETE /20210924/queues/{queueOcid}/messages/{receipt}           │
 │  ← Returns: array of up to 10 messages, each with content + receipt        │
 └─────────────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─[PHASE 2: ROUTE BY messageType]────────────────────────────────────────────┐
-│                                                                             │
+│                                                                            │
 │  [GAP-03] Sort the batch before processing: PIPELINE_INIT first, then      │
 │  STAGE_UPDATE, then PIPELINE_COMPLETE. OCI Queue is FIFO — the response    │
-│  array preserves enqueue order. Process in that order; do NOT iterate       │
+│  array preserves enqueue order. Process in that order; do NOT iterate      │
 │  in arbitrary message-type order. A STAGE_UPDATE processed before its own  │
 │  PIPELINE_INIT (both in same batch) causes FK violation on OIC_STAGE_TRACKING.│
 │                                                                             │
 │  For each message (sorted: PIPELINE_INIT → STAGE_UPDATE → PIPELINE_COMPLETE):│
 │                                                                             │
-│  ┌─ PIPELINE_INIT ────────────────────────────────────────────────────┐    │
-│  │   Load stage manifest from OIC_INTEGRATION_CONFIG (authoritative)  │    │
-│  │   Call SP_INIT_PIPELINE                                            │    │
-│  │   [ACC-02] DELETE msg from queue using receipt handle (on SUCCESS) │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
+│  ┌─ PIPELINE_INIT ────────────────────────────────────────────────────┐     │
+│  │   Load stage manifest from OIC_INTEGRATION_CONFIG (authoritative)  │     │
+│  │   Call SP_INIT_PIPELINE                                            │     │
+│  │   [ACC-02] DELETE msg from queue using receipt handle (on SUCCESS) │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
 │                                                                             │
-│  ┌─ STAGE_UPDATE ─────────────────────────────────────────────────────┐    │
-│  │   IF newStatus = 'FAILED' AND capturePayload = true:               │    │
-│  │     PUT payloadContent to OCI Object Storage                       │    │
-│  │     ← objectUri                                                    │    │
-│  │   Call SP_UPDATE_STAGE (with objectUri or null)                    │    │
-│  │   IF newStatus = 'FAILED' AND ALERT_ON_FAILURE = 'Y':             │    │
-│  │     OIC Email Action → alert recipients                            │    │
-│  │   [ACC-02] DELETE msg from queue using receipt handle (on SUCCESS) │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
+│  ┌─ STAGE_UPDATE ─────────────────────────────────────────────────────┐     │
+│  │   IF newStatus = 'FAILED' AND capturePayload = true:               │     │
+│  │     PUT payloadContent to OCI Object Storage                       │     │
+│  │     ← objectUri                                                    │     │
+│  │   Call SP_UPDATE_STAGE (with objectUri or null)                    │     │
+│  │   IF newStatus = 'FAILED' AND ALERT_ON_FAILURE = 'Y':              │     │
+│  │     OIC Email Action → alert recipients                            │     │
+│  │   [ACC-02] DELETE msg from queue using receipt handle (on SUCCESS) │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
 │                                                                             │
-│  ┌─ PIPELINE_COMPLETE ────────────────────────────────────────────────┐    │
+│  ┌─ PIPELINE_COMPLETE ────────────────────────────────────────────────┐     │
 │  │   Call SP_COMPLETE_PIPELINE                                         │    │
-│  │   [ACC-02] DELETE msg from queue using receipt handle (on SUCCESS) │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
+│  │   [ACC-02] DELETE msg from queue using receipt handle (on SUCCESS) │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
         │
@@ -896,12 +903,12 @@ Trigger: Schedule (every 30s) OR OCI Event (queue depth > N)
 ┌─[PHASE 3: DEQUEUE ACTIVITY LOGS — BATCH]───────────────────────────────────┐
 │                                                                             │
 │  REST Invoke → OCI Queue API                                                │
-│  [ACC-01] Use Queue OCID for oic-activity-logs — not the display name      │
+│  [ACC-01] Use Queue OCID for oic-activity-logs — not the display name       │
 │    GET /20210924/queues/{ocid1.queue.oc1.<region>.<unique-id>}/messages     │
 │  [GAP-07] visibilityInSeconds=120 consistent with tracking events queue     │
 │    ?limit={config.DISPATCHER_BATCH_SIZE}&visibilityInSeconds=120            │
 │                                                                             │
-│  ← Returns: array of ACTIVITY_LOG messages (each with content + receipt)   │
+│  ← Returns: array of ACTIVITY_LOG messages (each with content + receipt)    │
 │                                                                             │
 │  JS Action: Assemble JSON array of log payloads from message content fields │
 │  Call SP_BATCH_WRITE_LOGS (single DB call for entire batch)                 │
@@ -910,23 +917,23 @@ Trigger: Schedule (every 30s) OR OCI Event (queue depth > N)
         │
         ▼
 ┌─[PHASE 4: FAULT HANDLER — DLQ]─────────────────────────────────────────────┐
-│                                                                             │
-│  On any SP failure or Object Storage failure:                               │
+│                                                                            │
+│  On any SP failure or Object Storage failure:                              │
 │    Retry: up to 3 times with 5s delay (OIC retry scope)                    │
 │    On exhaustion — two-store DLQ pattern [ACC-04]:                         │
-│                                                                             │
-│    [ACC-04] APPLICATION DLQ → OIC_TRACKING_DLQ ATP table:                 │
+│                                                                            │
+│    [ACC-04] APPLICATION DLQ → OIC_TRACKING_DLQ ATP table:                  │
 │      Step 1: DELETE message from queue using receipt handle FIRST.         │
-│              This prevents the OCI Queue maxDeliveryCount from also         │
+│              This prevents the OCI Queue maxDeliveryCount from also        │
 │              routing it to the OCI Queue native DLQ (avoids double-entry). │
 │      Step 2: Call SP_WRITE_DLQ (full raw message preserved in ATP).        │
 │      Step 3: Write to OCI Logging: "ATP DLQ entry [{messageId}]            │
 │              correlationId={x} reason={y}"                                 │
 │      Use for: messages dispatcher dequeued but could NOT persist to ATP.   │
-│                                                                             │
-│    [ACC-04] OCI QUEUE NATIVE DLQ → oic-tracking-dlq queue:                │
+│                                                                            │
+│    [ACC-04] OCI QUEUE NATIVE DLQ → oic-tracking-dlq queue:                 │
 │      Populated automatically by OCI when maxDeliveryCount is exceeded.     │
-│      These are messages the dispatcher NEVER successfully consumed.         │
+│      These are messages the dispatcher NEVER successfully consumed.        │
 │      Monitor via OCI Console or OCI Monitoring metrics on the DLQ queue.   │
 │      Require manual inspection (malformed envelope, permanent schema error).│
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -949,6 +956,7 @@ Environment:    PROD
 
 → Review payload snapshot:
   [OCI Object Storage URI]
+
 5.2 PIPELINE_QUERY_API — Read-Only Observability Interface
 Code
 REST Trigger: GET /tracking/v1/pipeline/{correlationId}/summary
@@ -1148,6 +1156,7 @@ function buildLogMessage(corrId, integId, stageId, trackingId,
         }
     });
 }
+
 6.2 Complete Integration Flow Pattern
 Code
 Business Integration: PO_TO_ERP_SYNC
@@ -1287,6 +1296,7 @@ Business Integration: PO_TO_ERP_SYNC
    │                 erpRef: $erpResponse.referenceId } }
    │
    └── Return success response to caller
+
 6.3 correlationId Propagation for Synchronous Child Integrations
 Code
 Parent Integration
@@ -1322,16 +1332,16 @@ Code
 │                                                                     │
 │  Layer 1: CIRCUIT BREAKER                                           │
 │  ─────────────────────────                                          │
-│  [GAP-06 FIX] The circuit breaker uses TWO stores in tandem:       │
+│  [GAP-06 FIX] The circuit breaker uses TWO stores in tandem:        │
 │                                                                     │
-│  (A) OIC_INTEGRATION_CONFIG.TRACKING_ENABLED (ATP — authoritative) │
-│  (B) OIC Lookup Table "OIC_CB_FLAGS" (key=integrationId, val=Y/N)  │
-│      — in-memory within OIC, accessed in ~0ms, no DB round-trip    │
+│  (A) OIC_INTEGRATION_CONFIG.TRACKING_ENABLED (ATP — authoritative)  │
+│  (B) OIC Lookup Table "OIC_CB_FLAGS" (key=integrationId, val=Y/N)   │
+│      — in-memory within OIC, accessed in ~0ms, no DB round-trip     │
 │                                                                     │
 │  Sync mechanism (admin REST endpoint in PIPELINE_QUERY_API):        │
 │    POST /tracking/v1/admin/circuit-breaker                          │
-│    Body: { "integrationId": "X", "trackingEnabled": "N" }         │
-│    Step 1: UPDATE OIC_INTEGRATION_CONFIG SET TRACKING_ENABLED='N'  │
+│    Body: { "integrationId": "X", "trackingEnabled": "N" }           │
+│    Step 1: UPDATE OIC_INTEGRATION_CONFIG SET TRACKING_ENABLED='N'   │
 │    Step 2: UPDATE OIC Lookup Table entry in same integration flow   │
 │    Both steps in same REST call — atomic from operator perspective. │
 │                                                                     │
@@ -1339,13 +1349,13 @@ Code
 │    Read Lookup Table "OIC_CB_FLAGS" for integrationId               │
 │    var trackingOn = (lookupResult == "Y");                          │
 │    All subsequent enqueue calls are IF-guarded by trackingOn flag.  │
-│    → Zero DB round-trip at entry; zero business flow impact on 'N' │
+│    → Zero DB round-trip at entry; zero business flow impact on 'N'  │
 │  Restore: same admin endpoint with trackingEnabled="Y"              │
 │  Flip takes effect on the NEXT integration execution after update.  │
 │                                                                     │
 │  Layer 2: DISPATCHER RETRY + DLQ                                    │
 │  ──────────────────────────────────                                 │
-│  Dispatcher retries failed ATP writes up to 3× (5s, 15s, 30s)     │
+│  Dispatcher retries failed ATP writes up to 3× (5s, 15s, 30s)       │
 │  On exhaustion → SP_WRITE_DLQ preserves full raw message            │
 │  OCI Queue visibilityTimeout returns message to queue for           │
 │  natural retry if dispatcher itself fails mid-processing            │
@@ -1356,8 +1366,9 @@ Code
 │  If both OCI Queue AND OCI Logging unavailable (extreme scenario):  │
 │  Business integration fault handler logs to OIC's own instance log  │
 │  OIC instance logs are always available (Oracle-managed)            │
-│  Correlate later via OIC native tracking fields (corrId, bizKey)   │
+│  Correlate later via OIC native tracking fields (corrId, bizKey)    
 └─────────────────────────────────────────────────────────────────────┘
+
 Visibility Timeout Strategy:
 
 Code
@@ -1401,6 +1412,7 @@ Code
 │ ATP write latency (async lag)  │ Immediate     │ 30s–60s eventual        │
 │ Acceptable for observability?  │ Yes           │ ✅ Yes                 │
 └────────────────────────────────┴───────────────┴─────────────────────────┘
+
 The 30–60s async lag means dashboards and activity streams reflect state within about one dispatcher cycle. For operational monitoring this is entirely acceptable — and the trade-off of ~80% less business flow overhead makes it the clear winner for all integration types including real-time APIs.
 
 9. Data Retention & Housekeeping
@@ -1548,7 +1560,7 @@ Code
 │ Runtime performance impact           │ ✅ HIGH  │ ~80% reduction vs sync │
 │                                      │          │ ~250–450ms total       │
 ├──────────────────────────────────────┼──────────┼────────────────────────┤
-│ Business flow decoupling             │ ✅ HIGH  │ ATP issues fully        │
+│ Business flow decoupling             │ ✅ HIGH  │ ATP issues fully       │
 │                                      │          │ invisible to business  │
 ├──────────────────────────────────────┼──────────┼────────────────────────┤
 │ Implementation complexity            │ ⚠️ MEDIUM│ OCI Queue adds infra   │
