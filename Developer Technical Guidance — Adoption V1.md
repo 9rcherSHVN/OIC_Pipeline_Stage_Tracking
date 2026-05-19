@@ -1,8 +1,8 @@
 ## Developer Technical Guidance 
-— Custom integration pipeline configuration registration
-— Custom integration pipeline - stages - status configuration registration (instead of 'hardcoded' status)
-— Passing Runtime Business Context into the Pipeline Stage Tracking Interface
-— Passing custom json payload (business context specific) in javascript - FLEXIBILITY
+- Custom integration pipeline configuration registration
+- Custom integration pipeline - stages - status configuration registration (instead of 'hardcoded' status)
+- Passing Runtime Business Context into the Pipeline Stage Tracking Interface
+- Passing custom json payload (business context specific) in javascript - FLEXIBILITY
 
 ---
 
