@@ -211,6 +211,15 @@ Batch operations into stored procedures to minimize round-trips from OIC DB Adap
 ```sql
 -- ============================================================
 -- SP: Initialize Pipeline Run + All Stage Records
+-- IMPORTANT: All Stage Records - INITIALIZATION.
+-- ┌───────────┬──────────────┬─────────────────────┬─────────────┬────────────┬────────────────┐
+-- │ **ORDER** │ **STAGE_ID** │** STAGE_NAME**      │ STATUS      │ ATTEMPT_#  │ DURATION_MS    │
+-- ├───────────┼──────────────┼─────────────────────┼─────────────┼────────────┼────────────────┤
+-- │   **1**   │ **STAGE_00**1│ **INBOUND_VALID..** │ _COMPLETED_ │     1      │    1,120       │
+-- │   **2**   │ **STAGE_002**│ **ENRICHMENT**      │ _FAILED_    │     1      │   60,050       │  ← 60s timeout
+-- │   **3**   │ **STAGE_003**│ **ERP_SUBMISSION**  │ _PENDING_   │     1      │    null        │  ← never reached
+-- │   **4**   │ **STAGE_004**│ **NOTIFICATION **   │ _PENDING_   │     1      │    null        │  ← never reached
+-- └───────────┴──────────────┴─────────────────────┴─────────────┴────────────┴────────────────┘
 -- ============================================================
 CREATE OR REPLACE PROCEDURE OIC_PKG.SP_INIT_PIPELINE (
     p_correlation_id     IN  VARCHAR2,
@@ -286,6 +295,15 @@ END SP_INIT_PIPELINE;
 
 -- ============================================================
 -- SP: Update Stage Status with State Machine Validation
+-- IMPORTANT: All Stage Records - UPDATES.
+-- ┌───────┬──────────┬─────────────────┬───────────────┬────────────────┬────────────────┐
+-- │ ORDER │ STAGE_ID │ STAGE_NAME      │ **STATUS**    │ **ATTEMPT_#**  │ DURATION_MS    │
+-- ├───────┼──────────┼─────────────────┼───────────────┼────────────────┼────────────────┤
+-- │   1   │ STAGE_001│ INBOUND_VALID.. │ **COMPLETED** │    **1**       │    1,120       │
+-- │   2   │ STAGE_002│ ENRICHMENT      │ **FAILED**    │    **1**       │   60,050       │  ← 60s timeout
+-- │   3   │ STAGE_003│ ERP_SUBMISSION  │ **PENDING**   │    **1**       │    null        │  ← never reached
+-- │   4   │ STAGE_004│ NOTIFICATION    │ **PENDING**   │    **1**       │    null        │  ← never reached
+-- └───────┴──────────┴─────────────────┴───────────────┴────────────────┴────────────────┘
 -- ============================================================
 CREATE OR REPLACE PROCEDURE OIC_PKG.SP_UPDATE_STAGE (
     p_correlation_id     IN  VARCHAR2,
@@ -388,6 +406,7 @@ END SP_UPDATE_STAGE;
 
 -- ============================================================
 -- SP: Write Activity Log Entry
+-- IMPORTANT: INSERTS ONLY
 -- ============================================================
 CREATE OR REPLACE PROCEDURE OIC_PKG.SP_WRITE_ACTIVITY_LOG (
     p_log_id          IN  VARCHAR2,
